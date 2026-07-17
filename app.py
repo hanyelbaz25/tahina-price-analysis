@@ -20,7 +20,7 @@ from openpyxl.utils import get_column_letter
 
 NS = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 DEFAULT_FILE = Path(__file__).with_name("مقارنة مشتريات جدة.xlsx")
-APP_VERSION = "V4.2"
+APP_VERSION = "V4.3 Mobile"
 
 st.set_page_config(
     page_title=f"تحليل أسعار المشتريات {APP_VERSION}",
@@ -39,8 +39,11 @@ div[data-testid=stMetric]{background:#fff;border:1px solid #e5e7eb;border-radius
 .note{background:#f8fafc;border-right:5px solid #0e7490;padding:12px 14px;border-radius:10px}
 .decision{padding:14px;border-radius:12px;background:#f8fafc;border:1px solid #e2e8f0;margin:8px 0}
 .badge{display:inline-block;padding:4px 10px;border-radius:999px;font-weight:700;font-size:13px}.red{background:#fee2e2;color:#991b1b}.green{background:#dcfce7;color:#166534}.yellow{background:#fef3c7;color:#92400e}.blue{background:#dbeafe;color:#1e40af}
-[data-testid="stSidebar"]{background:#f8fafc}
 [data-testid="stDataFrame"]{overflow-x:auto;border-radius:12px}
+.mobile-toolbar{background:#ffffff;border:1px solid #e5e7eb;border-radius:16px;padding:12px 14px;margin-bottom:12px;box-shadow:0 3px 14px rgba(0,0,0,.04)}
+.kpi-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:10px;margin:8px 0 16px}
+.kpi-card{background:#fff;border:1px solid #e5e7eb;border-radius:15px;padding:12px;text-align:center;box-shadow:0 3px 12px rgba(0,0,0,.045)}
+.kpi-label{font-size:12px;color:#64748b;margin-bottom:6px}.kpi-value{font-size:21px;font-weight:800;color:#0f172a;overflow-wrap:anywhere}
 [data-testid="stPlotlyChart"]{overflow:hidden}
 button[kind="header"]{z-index:1000000}
 
@@ -52,17 +55,13 @@ button[kind="header"]{z-index:1000000}
   .hero h1{font-size:21px!important;line-height:1.45}
   .hero p{font-size:13px;line-height:1.65}
 
-  /* جعل كل الأعمدة تحت بعضها على الهاتف */
-  div[data-testid="stHorizontalBlock"]{display:flex!important;flex-direction:column!important;gap:.55rem!important}
-  div[data-testid="column"]{width:100%!important;min-width:100%!important;flex:1 1 100%!important}
+  .kpi-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important;gap:8px!important}
+  .kpi-card{padding:10px 8px!important;border-radius:12px!important}
+  .kpi-label{font-size:11px!important}.kpi-value{font-size:18px!important}
   div[data-testid=stMetric]{min-height:auto!important;padding:10px 12px!important;border-radius:12px}
   div[data-testid=stMetric] label{font-size:12px!important}
   div[data-testid=stMetric] [data-testid="stMetricValue"]{font-size:22px!important}
-
-  /* القائمة الجانبية تصبح بعرض مناسب ولا تترك جزءًا أبيض */
-  section[data-testid="stSidebar"]{width:88vw!important;min-width:88vw!important;max-width:88vw!important}
-  section[data-testid="stSidebar"] > div{width:88vw!important;padding-top:.4rem}
-  [data-testid="stSidebarContent"]{padding-left:.65rem!important;padding-right:.65rem!important}
+  section[data-testid="stSidebar"]{display:none!important}
 
   /* منع شرائح الاختيار من تمديد الشاشة */
   [data-baseweb="select"]{max-width:100%!important}
@@ -76,7 +75,7 @@ button[kind="header"]{z-index:1000000}
   /* الرسوم والجداول */
   [data-testid="stPlotlyChart"]>div{width:100%!important}
   [data-testid="stDataFrame"]{max-width:100%!important;overflow-x:auto!important}
-  [data-testid="stDataFrame"] iframe{min-width:720px!important}
+  [data-testid="stDataFrame"] iframe{min-width:620px!important}
   h1{font-size:24px!important} h2{font-size:20px!important} h3{font-size:17px!important}
   .note{font-size:12px;line-height:1.7;padding:10px}
 }
@@ -446,8 +445,15 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-with st.sidebar:
-    st.header("إعدادات البيانات")
+st.markdown('<div class="mobile-toolbar"><b>📱 تنقل سريع وإعدادات مناسبة للهاتف</b></div>', unsafe_allow_html=True)
+
+page = st.selectbox(
+    "اختر الصفحة",
+    ["🏠 لوحة المدير", "📦 تحليل الصنف", "🏷 تحليل التصنيف", "🚚 تحليل المورد", "📡 مراقبة الأسعار", "🎯 مركز القرار", "📑 البيانات والتصدير"],
+    index=0,
+)
+
+with st.expander("⚙️ إعدادات الملف والشهور", expanded=False):
     uploaded = st.file_uploader("اختر ملف Excel", type=["xlsx"])
     months_limit = st.slider("عدد الشهور المراد تحليلها", 2, 12, 5)
     st.caption("تبدأ عناوين الشهور من الصف 6، وتُعامل الأسعار الصفرية كبيانات مفقودة.")
@@ -460,17 +466,13 @@ except Exception as exc:
     st.error(f"تعذر قراءة الملف: {exc}")
     st.stop()
 
-with st.sidebar:
-    cats_all = sorted(data["التصنيف"].unique(), key=str.casefold)
-    sups_all = sorted(data["المورد"].unique(), key=str.casefold)
+cats_all = sorted(data["التصنيف"].unique(), key=str.casefold)
+sups_all = sorted(data["المورد"].unique(), key=str.casefold)
+with st.expander("🔎 الفلاتر والبحث", expanded=False):
     selected_cats = st.multiselect("التصنيفات", cats_all, default=cats_all)
     selected_sups = st.multiselect("الموردون", sups_all, default=sups_all)
     selected_risks = st.multiselect("مستوى المخاطر", ["مرتفع", "متوسط", "منخفض"], default=["مرتفع", "متوسط", "منخفض"])
     search = st.text_input("بحث باسم الصنف")
-    page = st.radio(
-        "التنقل",
-        ["🏠 لوحة المدير", "📦 تحليل الصنف", "🏷 تحليل التصنيف", "🚚 تحليل المورد", "📡 مراقبة الأسعار", "🎯 مركز القرار", "📑 البيانات والتصدير"],
-    )
 
 filtered = data[
     data["التصنيف"].isin(selected_cats)
@@ -486,18 +488,20 @@ if filtered.empty:
 cat_sum = grouped(filtered, "التصنيف", months)
 sup_sum = grouped(filtered, "المورد", months)
 
-kpi_cols = st.columns(7)
 kpis = [
     ("الأصناف", len(filtered)),
     ("التصنيفات", filtered["التصنيف"].nunique()),
     ("الموردون", filtered["المورد"].nunique()),
-    ("مرتفعة", int((filtered["الاتجاه"] == "مرتفع").sum())),
-    ("منخفضة", int((filtered["الاتجاه"] == "منخفض").sum())),
+    ("▲ مرتفعة", int((filtered["الاتجاه"] == "مرتفع").sum())),
+    ("▼ منخفضة", int((filtered["الاتجاه"] == "منخفض").sum())),
     ("متوسط التغير", pct(filtered["التغير الكلي %"].mean())),
     ("عالية المخاطر", int((filtered["مستوى المخاطر"] == "مرتفع").sum())),
 ]
-for col, (label, value) in zip(kpi_cols, kpis):
-    col.metric(label, value)
+kpi_html = '<div class="kpi-grid">' + ''.join(
+    f'<div class="kpi-card"><div class="kpi-label">{label}</div><div class="kpi-value">{value}</div></div>'
+    for label, value in kpis
+) + '</div>'
+st.markdown(kpi_html, unsafe_allow_html=True)
 
 if page == "🏠 لوحة المدير":
     a, b = st.columns(2)
