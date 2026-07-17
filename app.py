@@ -162,6 +162,9 @@ with st.sidebar:
     cats_all=sorted(data["التصنيف"].dropna().astype(str).unique()); sups_all=sorted(data["المورد"].dropna().astype(str).unique())
     sc=st.multiselect("التصنيفات",cats_all,default=cats_all); ss=st.multiselect("الموردون",sups_all,default=sups_all); rf=st.multiselect("المخاطر",["مرتفع","متوسط","منخفض"],default=["مرتفع","متوسط","منخفض"])
 filtered=data[data["التصنيف"].astype(str).isin(sc)&data["المورد"].astype(str).isin(ss)&data["مستوى المخاطر"].isin(rf)].copy()
+for _col in ["اسم الصنف", "التصنيف", "المورد", "الوحدة"]:
+    if _col in filtered.columns:
+        filtered[_col] = filtered[_col].fillna("غير محدد").astype(str).str.strip()
 if filtered.empty:st.warning("لا توجد بيانات تطابق الفلاتر");st.stop()
 cat_sum=grouped(filtered,"التصنيف",months); sup_sum=grouped(filtered,"المورد",months)
 cols=st.columns(7); vals=[("الأصناف",len(filtered)),("التصنيفات",filtered['التصنيف'].nunique()),("الموردون",filtered['المورد'].nunique()),("مرتفعة",(filtered.الاتجاه=='مرتفع').sum()),("منخفضة",(filtered.الاتجاه=='منخفض').sum()),("متوسط التغير",pct(filtered['التغير الكلي %'].mean())),("عالية المخاطر",(filtered['مستوى المخاطر']=='مرتفع').sum())]
@@ -177,7 +180,8 @@ with tabs[0]:
         tr=filtered[months].mean().reset_index();tr.columns=['الشهر','متوسط السعر'];st.plotly_chart(px.line(tr,x='الشهر',y='متوسط السعر',markers=True,title='اتجاه متوسط الأسعار'),use_container_width=True)
     with b: st.plotly_chart(px.pie(filtered['الاتجاه'].value_counts().reset_index(),names='الاتجاه',values='count',hole=.5,title='توزيع الاتجاهات'),use_container_width=True)
 with tabs[1]:
-    name=st.selectbox("اختر الصنف",filtered.sort_values('اسم الصنف')['اسم الصنف']);r=filtered[filtered['اسم الصنف']==name].iloc[0]
+    item_names = sorted(filtered['اسم الصنف'].dropna().astype(str).unique(), key=lambda x: x.casefold())
+    name=st.selectbox("اختر الصنف", item_names);r=filtered[filtered['اسم الصنف'].astype(str)==str(name)].iloc[0]
     cs=st.columns(6)
     for c,(l,v) in zip(cs,[("أول سعر",money(r['أول سعر'])),("آخر سعر",money(r['آخر سعر'])),("التغير",pct(r['التغير الكلي %'])),("المتوسط",money(r['متوسط السعر'])),("التذبذب",pct(r['التذبذب %'])),("المخاطر",f"{r['درجة المخاطر']:.1f}/100")]):c.metric(l,v)
     p=pd.DataFrame({'الشهر':months,'السعر':[r[m] for m in months]});p['التغير الشهري %']=p['السعر'].pct_change()*100
