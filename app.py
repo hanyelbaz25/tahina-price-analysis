@@ -20,7 +20,7 @@ from openpyxl.utils import get_column_letter
 
 NS = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 DEFAULT_FILE = Path(__file__).with_name("مقارنة مشتريات جدة.xlsx")
-APP_VERSION = "V4.3 Mobile"
+APP_VERSION = "V4.4 Auto Months"
 
 st.set_page_config(
     page_title=f"تحليل أسعار المشتريات {APP_VERSION}",
@@ -93,48 +93,101 @@ def col_index(ref: str) -> int:
     return n
 
 
-def read_xlsx_cached(source: bytes, months_limit: int = 5) -> Tuple[pd.DataFrame, List[str]]:
-    """Read cached values from first worksheet, avoiding external-link formula failures."""
+def _cell_value(c, shared):
+    typ = c.attrib.get("t")
+    v = c.find("a:v", NS)
+    if v is None or v.text is None:
+        return None
+    raw = v.text
+    if typ == "s":
+        return shared[int(raw)]
+    if typ == "b":
+        return raw == "1"
+    try:
+        return float(raw)
+    except ValueError:
+        return raw
+
+
+def _month_key(label: str):
+    text = str(label).strip().replace("شهر", "").strip()
+    arabic = {
+        "يناير": 1, "فبراير": 2, "مارس": 3, "أبريل": 4, "ابريل": 4,
+        "مايو": 5, "يونيو": 6, "يوليو": 7, "أغسطس": 8, "اغسطس": 8,
+        "سبتمبر": 9, "أكتوبر": 10, "اكتوبر": 10, "نوفمبر": 11, "ديسمبر": 12,
+        "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+        "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+    }
+    low = text.lower()
+    for name, num in arabic.items():
+        if name in low:
+            y = re.search(r"20\d{2}", low)
+            return (int(y.group()) if y else 0, num, low)
+    nums = [int(x) for x in re.findall(r"\d+", low)]
+    if len(nums) >= 2:
+        year = next((x for x in nums if 2000 <= x <= 2100), 0)
+        month = next((x for x in nums if 1 <= x <= 12 and x != year), 99)
+        return (year, month, low)
+    if nums and 1 <= nums[0] <= 12:
+        return (0, nums[0], low)
+    return (9999, 99, low)
+
+
+def _infer_month_from_filename(filename: str) -> str | None:
+    name = Path(filename).stem
+    arabic_months = ["يناير", "فبراير", "مارس", "أبريل", "ابريل", "مايو", "يونيو", "يوليو", "أغسطس", "اغسطس", "سبتمبر", "أكتوبر", "اكتوبر", "نوفمبر", "ديسمبر"]
+    for month in arabic_months:
+        if month in name:
+            year = re.search(r"20\d{2}", name)
+            return f"{month} {year.group()}" if year else month
+    ym = re.search(r"(20\d{2})[-_ ](0?[1-9]|1[0-2])", name)
+    if ym:
+        return f"{int(ym.group(2))}-{ym.group(1)}"
+    my = re.search(r"(?:^|\D)(0?[1-9]|1[0-2])[-_ ](20\d{2})(?:\D|$)", name)
+    if my:
+        return f"{int(my.group(1))}-{my.group(2)}"
+    return None
+
+
+def read_xlsx_cached(source: bytes, filename: str = "ملف.xlsx") -> Tuple[pd.DataFrame, List[str]]:
+    """Read all detected months from row 6. If no month columns exist, use column G and infer month from filename."""
     with zipfile.ZipFile(io.BytesIO(source)) as z:
         shared = []
         if "xl/sharedStrings.xml" in z.namelist():
             root = ET.fromstring(z.read("xl/sharedStrings.xml"))
             for si in root.findall("a:si", NS):
                 shared.append("".join((t.text or "") for t in si.findall(".//a:t", NS)))
-        sheet = ET.fromstring(z.read("xl/worksheets/sheet1.xml"))
+        sheet_name = next((n for n in z.namelist() if n.startswith("xl/worksheets/sheet") and n.endswith(".xml")), None)
+        if not sheet_name:
+            raise ValueError("لا توجد ورقة عمل صالحة داخل الملف.")
+        sheet = ET.fromstring(z.read(sheet_name))
         rows = {}
         for row in sheet.findall(".//a:sheetData/a:row", NS):
             r = int(row.attrib["r"])
             rows[r] = {}
             for c in row.findall("a:c", NS):
-                idx = col_index(c.attrib["r"])
-                typ = c.attrib.get("t")
-                v = c.find("a:v", NS)
-                val = None
-                if v is not None and v.text is not None:
-                    raw = v.text
-                    if typ == "s":
-                        val = shared[int(raw)]
-                    elif typ == "b":
-                        val = raw == "1"
-                    else:
-                        try:
-                            val = float(raw)
-                        except ValueError:
-                            val = raw
-                rows[r][idx] = val
+                rows[r][col_index(c.attrib["r"])] = _cell_value(c, shared)
 
     header = rows.get(6, {})
     base = {2: "كود الصنف", 3: "اسم الصنف", 4: "التصنيف", 5: "الوحدة", 6: "المورد", 7: "السعر الأساسي"}
     month_cols = []
-    for c in range(9, 40):
+    for c in range(9, 250):
         h = header.get(c)
-        if h is not None and str(h).strip():
-            label = str(int(h)) if isinstance(h, float) and h.is_integer() else str(h).strip()
+        if h is None or not str(h).strip():
+            continue
+        label = str(int(h)) if isinstance(h, float) and h.is_integer() else str(h).strip()
+        # Accept numbers 1-12, Arabic/English month names, or labels containing a year/month.
+        key = _month_key(label)
+        if key[1] <= 12 or any(x in label.lower() for x in ["يناير","فبراير","مارس","أبريل","ابريل","مايو","يونيو","يوليو","أغسطس","اغسطس","سبتمبر","أكتوبر","اكتوبر","نوفمبر","ديسمبر","jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"]):
             month_cols.append((c, label))
-    month_cols = month_cols[:months_limit]
-    if len(month_cols) < 2:
-        raise ValueError("لم يتم العثور على شهرين صالحين على الأقل ابتداءً من الصف 6.")
+
+    inferred = None
+    if not month_cols:
+        inferred = _infer_month_from_filename(filename)
+        if inferred:
+            month_cols = [(7, inferred)]
+    if not month_cols:
+        raise ValueError("لم يتم العثور على شهور في الصف 6، ولم يمكن معرفة الشهر من اسم الملف.")
 
     recs = []
     for r in sorted(k for k in rows if k > 6):
@@ -153,6 +206,45 @@ def read_xlsx_cached(source: bytes, months_limit: int = 5) -> Tuple[pd.DataFrame
     df = pd.DataFrame(recs)
     months = [f"شهر {m}" for _, m in month_cols]
     return df, months
+
+
+def combine_workbooks(files: List[Tuple[str, bytes]]) -> Tuple[pd.DataFrame, List[str]]:
+    """Combine one workbook with many months or several monthly workbooks. Later files override duplicate month values."""
+    frames = []
+    all_months = []
+    for filename, content in files:
+        frame, months = read_xlsx_cached(content, filename)
+        frames.append((frame, months))
+        all_months.extend(months)
+
+    keys = ["كود الصنف", "اسم الصنف"]
+    meta = ["التصنيف", "الوحدة", "المورد", "السعر الأساسي"]
+    combined = None
+    for frame, months in frames:
+        frame = frame.copy()
+        frame["كود الصنف"] = frame["كود الصنف"].astype(str).str.strip()
+        frame["اسم الصنف"] = frame["اسم الصنف"].astype(str).str.strip()
+        frame = frame.drop_duplicates(keys, keep="last").set_index(keys)
+        if combined is None:
+            combined = frame
+            continue
+        for col in meta + months:
+            if col not in frame.columns:
+                continue
+            if col in combined.columns:
+                combined[col] = frame[col].combine_first(combined[col])
+            else:
+                combined[col] = frame[col]
+        for col in combined.columns:
+            if col not in frame.columns:
+                continue
+        combined = combined.combine_first(frame)
+
+    combined = combined.reset_index()
+    month_unique = sorted(set(all_months), key=lambda x: _month_key(x))
+    # Ensure all month columns exist after merging.
+    month_unique = [m for m in month_unique if m in combined.columns]
+    return combined, month_unique
 
 
 def decision(row: pd.Series) -> str:
@@ -441,7 +533,7 @@ def make_excel(items: pd.DataFrame, cats: pd.DataFrame, sups: pd.DataFrame, mont
 
 
 st.markdown(
-    f'<div class="hero"><h1>📊 برنامج تحليل تغير أسعار المشتريات {APP_VERSION}</h1><p>لوحة تنفيذية، تحليل الصنف والتصنيف والمورد، مراقبة الأسعار، مركز القرار، وتصدير Excel احترافي.</p></div>',
+    f'<div class="hero"><h1>📊 برنامج تحليل تغير أسعار المشتريات {APP_VERSION}</h1><p>لوحة تنفيذية مع اكتشاف الشهور ودمج الملفات الشهرية تلقائيًا، وتحليل الصنف والتصنيف والمورد ومركز القرار.</p></div>',
     unsafe_allow_html=True,
 )
 
@@ -453,15 +545,22 @@ page = st.selectbox(
     index=0,
 )
 
-with st.expander("⚙️ إعدادات الملف والشهور", expanded=False):
-    uploaded = st.file_uploader("اختر ملف Excel", type=["xlsx"])
-    months_limit = st.slider("عدد الشهور المراد تحليلها", 2, 12, 5)
-    st.caption("تبدأ عناوين الشهور من الصف 6، وتُعامل الأسعار الصفرية كبيانات مفقودة.")
+with st.expander("⚙️ رفع الملفات والشهور التلقائية", expanded=False):
+    uploaded_files = st.file_uploader(
+        "اختر ملف Excel واحدًا أو عدة ملفات شهرية",
+        type=["xlsx"],
+        accept_multiple_files=True,
+        help="يمكن رفع ملف واحد يحتوي كل الشهور، أو ملف مستقل لكل شهر. عند تكرار الشهر تؤخذ بيانات آخر ملف مرفوع.",
+    )
+    st.caption("يكتشف البرنامج جميع الشهور من الصف 6 تلقائيًا. وإذا كان الملف شهريًا بلا أعمدة شهور، اكتب الشهر في اسم الملف مثل: مشتريات_يونيو_2026.xlsx.")
 
 try:
-    raw = uploaded.getvalue() if uploaded else DEFAULT_FILE.read_bytes()
-    base, months = read_xlsx_cached(raw, months_limit=months_limit)
+    file_inputs = [(f.name, f.getvalue()) for f in uploaded_files] if uploaded_files else [(DEFAULT_FILE.name, DEFAULT_FILE.read_bytes())]
+    base, months = combine_workbooks(file_inputs)
+    if len(months) < 2:
+        raise ValueError("يلزم توفر شهرين على الأقل لإجراء المقارنة. ارفع ملف شهر إضافيًا.")
     data = enrich(base, months)
+    st.success(f"تم اكتشاف {len(months)} شهرًا تلقائيًا: " + "، ".join(m.replace("شهر ", "") for m in months))
 except Exception as exc:
     st.error(f"تعذر قراءة الملف: {exc}")
     st.stop()
@@ -616,4 +715,4 @@ elif page == "📑 البيانات والتصدير":
     xlsx = make_excel(filtered, cat_sum, sup_sum, months)
     st.download_button("📥 تحميل تقرير Excel الاحترافي", xlsx, f"تقرير_تحليل_الأسعار_{APP_VERSION}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-st.markdown('<div class="note"><b>منهجية الحساب:</b> نسبة التغير = (آخر سعر متاح ÷ أول سعر متاح − 1) × 100، مع استبعاد الأسعار الصفرية. مؤشر المخاطر يجمع التغير والتذبذب والارتفاعات المتتالية.</div>', unsafe_allow_html=True)
+st.markdown('<div class="note"><b>إضافة شهر جديد:</b> ارفع ملفًا جديدًا من قسم «رفع الملفات والشهور التلقائية». يمكن رفع عدة ملفات معًا، ويُرتب البرنامج الشهور تلقائيًا.<br><b>منهجية الحساب:</b> نسبة التغير = (آخر سعر متاح ÷ أول سعر متاح − 1) × 100، مع استبعاد الأسعار الصفرية. مؤشر المخاطر يجمع التغير والتذبذب والارتفاعات المتتالية.</div>', unsafe_allow_html=True)
