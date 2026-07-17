@@ -14,27 +14,72 @@ import plotly.graph_objects as go
 import streamlit as st
 from openpyxl import Workbook
 from openpyxl.chart import BarChart, LineChart, Reference
-from openpyxl.formatting.rule import CellIsRule, ColorScaleRule
+from openpyxl.formatting.rule import CellIsRule, ColorScaleRule, FormulaRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 NS = {"a": "http://schemas.openxmlformats.org/spreadsheetml/2006/main"}
 DEFAULT_FILE = Path(__file__).with_name("مقارنة مشتريات جدة.xlsx")
-APP_VERSION = "V4.0"
+APP_VERSION = "V4.2"
 
-st.set_page_config(page_title=f"تحليل أسعار المشتريات {APP_VERSION}", page_icon="📊", layout="wide")
+st.set_page_config(
+    page_title=f"تحليل أسعار المشتريات {APP_VERSION}",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
 st.markdown(
     """
 <style>
 html,body,[class*=css]{direction:rtl;text-align:right}
-.main .block-container{padding-top:.7rem;max-width:1600px}
+.main .block-container{padding-top:.7rem;padding-left:1rem;padding-right:1rem;max-width:1600px}
 .hero{background:linear-gradient(135deg,#17324d,#0e7490);color:#fff;border-radius:22px;padding:22px 28px;margin-bottom:14px;box-shadow:0 10px 28px rgba(14,116,144,.16)}
-.hero h1{margin:0;font-size:31px}.hero p{margin:8px 0 0;opacity:.93}
-div[data-testid=stMetric]{background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:14px;box-shadow:0 3px 14px rgba(0,0,0,.05)}
+.hero h1{margin:0;font-size:31px;line-height:1.35}.hero p{margin:8px 0 0;opacity:.93}
+div[data-testid=stMetric]{background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:14px;box-shadow:0 3px 14px rgba(0,0,0,.05);min-height:104px}
 .note{background:#f8fafc;border-right:5px solid #0e7490;padding:12px 14px;border-radius:10px}
 .decision{padding:14px;border-radius:12px;background:#f8fafc;border:1px solid #e2e8f0;margin:8px 0}
 .badge{display:inline-block;padding:4px 10px;border-radius:999px;font-weight:700;font-size:13px}.red{background:#fee2e2;color:#991b1b}.green{background:#dcfce7;color:#166534}.yellow{background:#fef3c7;color:#92400e}.blue{background:#dbeafe;color:#1e40af}
 [data-testid="stSidebar"]{background:#f8fafc}
+[data-testid="stDataFrame"]{overflow-x:auto;border-radius:12px}
+[data-testid="stPlotlyChart"]{overflow:hidden}
+button[kind="header"]{z-index:1000000}
+
+/* تحسين عرض الهواتف */
+@media (max-width: 768px){
+  html,body{overflow-x:hidden!important}
+  .main .block-container{padding:.55rem .55rem 1.2rem!important;max-width:100%!important}
+  .hero{border-radius:14px;padding:15px 14px;margin-bottom:10px}
+  .hero h1{font-size:21px!important;line-height:1.45}
+  .hero p{font-size:13px;line-height:1.65}
+
+  /* جعل كل الأعمدة تحت بعضها على الهاتف */
+  div[data-testid="stHorizontalBlock"]{display:flex!important;flex-direction:column!important;gap:.55rem!important}
+  div[data-testid="column"]{width:100%!important;min-width:100%!important;flex:1 1 100%!important}
+  div[data-testid=stMetric]{min-height:auto!important;padding:10px 12px!important;border-radius:12px}
+  div[data-testid=stMetric] label{font-size:12px!important}
+  div[data-testid=stMetric] [data-testid="stMetricValue"]{font-size:22px!important}
+
+  /* القائمة الجانبية تصبح بعرض مناسب ولا تترك جزءًا أبيض */
+  section[data-testid="stSidebar"]{width:88vw!important;min-width:88vw!important;max-width:88vw!important}
+  section[data-testid="stSidebar"] > div{width:88vw!important;padding-top:.4rem}
+  [data-testid="stSidebarContent"]{padding-left:.65rem!important;padding-right:.65rem!important}
+
+  /* منع شرائح الاختيار من تمديد الشاشة */
+  [data-baseweb="select"]{max-width:100%!important}
+  [data-baseweb="tag"]{max-width:94%!important;height:auto!important;white-space:normal!important}
+  [data-baseweb="tag"] span{white-space:normal!important;overflow-wrap:anywhere!important}
+
+  /* أزرار وقوائم بحجم لمس مناسب */
+  .stButton button,.stDownloadButton button{width:100%!important;min-height:44px}
+  div[role="radiogroup"] label{padding:.35rem 0!important}
+
+  /* الرسوم والجداول */
+  [data-testid="stPlotlyChart"]>div{width:100%!important}
+  [data-testid="stDataFrame"]{max-width:100%!important;overflow-x:auto!important}
+  [data-testid="stDataFrame"] iframe{min-width:720px!important}
+  h1{font-size:24px!important} h2{font-size:20px!important} h3{font-size:17px!important}
+  .note{font-size:12px;line-height:1.7;padding:10px}
+}
 </style>
 """,
     unsafe_allow_html=True,
@@ -205,6 +250,51 @@ def money(x) -> str:
     return "—" if pd.isna(x) else f"{x:,.2f} ر.س"
 
 
+def direction_symbol(current, previous) -> str:
+    if pd.isna(current) or pd.isna(previous):
+        return "—"
+    if current > previous + 1e-9:
+        return "▲"
+    if current < previous - 1e-9:
+        return "▼"
+    return "●"
+
+
+def price_display(frame: pd.DataFrame, months: List[str]) -> pd.DataFrame:
+    """Create a user-facing table with arrows beside monthly prices."""
+    out = frame.copy()
+    for i, m in enumerate(months):
+        if i == 0:
+            out[m] = out[m].apply(lambda v: "—" if pd.isna(v) else f"{v:,.2f}")
+        else:
+            prev = months[i - 1]
+            out[m] = [
+                "—" if pd.isna(cur) else f"{direction_symbol(cur, prv)} {cur:,.2f}"
+                for cur, prv in zip(frame[m], frame[prev])
+            ]
+    return out
+
+
+def style_price_table(display_df: pd.DataFrame, raw_df: pd.DataFrame, months: List[str]):
+    def style_col(col):
+        styles = []
+        if col.name not in months or months.index(col.name) == 0:
+            return ["" for _ in col]
+        i = months.index(col.name)
+        prev = months[i - 1]
+        for cur, prv in zip(raw_df[col.name], raw_df[prev]):
+            if pd.isna(cur) or pd.isna(prv):
+                styles.append("")
+            elif cur > prv + 1e-9:
+                styles.append("background-color:#fee2e2;color:#b91c1c;font-weight:700")
+            elif cur < prv - 1e-9:
+                styles.append("background-color:#dcfce7;color:#166534;font-weight:700")
+            else:
+                styles.append("background-color:#fef3c7;color:#92400e;font-weight:700")
+        return styles
+    return display_df.style.apply(style_col, axis=0)
+
+
 def make_excel(items: pd.DataFrame, cats: pd.DataFrame, sups: pd.DataFrame, months: List[str]) -> bytes:
     wb = Workbook()
     ws = wb.active
@@ -306,10 +396,41 @@ def make_excel(items: pd.DataFrame, cats: pd.DataFrame, sups: pd.DataFrame, mont
             sh.conditional_formatting.add(rng, ColorScaleRule(start_type="num", start_value=0, start_color=green, mid_type="num", mid_value=50, mid_color=yellow, end_type="num", end_value=100, end_color=red))
         return sh
 
-    display = ["كود الصنف", "اسم الصنف", "التصنيف", "الوحدة", "المورد"] + months + [
-        "التغير الكلي %", "التذبذب %", "الاتجاه", "أشهر ارتفاع متتالية", "درجة المخاطر", "مستوى المخاطر", "التوصية"
-    ]
-    add_sheet("البيانات", items[display])
+    base_cols = ["كود الصنف", "اسم الصنف", "التصنيف", "الوحدة", "المورد"]
+    export_items = items[base_cols].copy()
+    for i, m in enumerate(months):
+        export_items[m] = items[m]
+        if i > 0:
+            prev = months[i - 1]
+            export_items[f"حركة {m}"] = [direction_symbol(c, p) for c, p in zip(items[m], items[prev])]
+    tail_cols = ["التغير الكلي %", "التذبذب %", "الاتجاه", "أشهر ارتفاع متتالية", "درجة المخاطر", "مستوى المخاطر", "التوصية"]
+    for c in tail_cols:
+        export_items[c] = items[c]
+    data_sheet = add_sheet("البيانات", export_items)
+    # Color arrows and monthly cells in the exported workbook.
+    cols = list(export_items.columns)
+    for i, m in enumerate(months):
+        if i == 0:
+            continue
+        mci = cols.index(m) + 1
+        aci = cols.index(f"حركة {m}") + 1
+        prevci = cols.index(months[i - 1]) + 1
+        for r in range(2, data_sheet.max_row + 1):
+            cur = data_sheet.cell(r, mci).value
+            prv = data_sheet.cell(r, prevci).value
+            arrow = data_sheet.cell(r, aci)
+            if isinstance(cur, (int, float)) and isinstance(prv, (int, float)):
+                if cur > prv + 1e-9:
+                    fill, color = PatternFill("solid", fgColor=red), "B91C1C"
+                elif cur < prv - 1e-9:
+                    fill, color = PatternFill("solid", fgColor=green), "166534"
+                else:
+                    fill, color = PatternFill("solid", fgColor=yellow), "92400E"
+                data_sheet.cell(r, mci).fill = fill
+                data_sheet.cell(r, mci).font = Font(color=color, bold=True)
+                arrow.fill = fill
+                arrow.font = Font(color=color, bold=True, size=14)
+                arrow.alignment = Alignment(horizontal="center")
     add_sheet("تحليل التصنيفات", cats)
     add_sheet("تحليل الموردين", sups)
     rec = items[["اسم الصنف", "التصنيف", "المورد", "التغير الكلي %", "أشهر ارتفاع متتالية", "درجة المخاطر", "التوصية"]].sort_values("درجة المخاطر", ascending=False)
@@ -382,10 +503,14 @@ if page == "🏠 لوحة المدير":
     a, b = st.columns(2)
     with a:
         top = filtered.nlargest(10, "التغير الكلي %").sort_values("التغير الكلي %")
-        st.plotly_chart(px.bar(top, x="التغير الكلي %", y="اسم الصنف", orientation="h", title="أعلى 10 أصناف ارتفاعًا", text_auto=".2f"), use_container_width=True)
+        fig_top = px.bar(top, x="التغير الكلي %", y="اسم الصنف", orientation="h", title="أعلى 10 أصناف ارتفاعًا", text_auto=".2f")
+        fig_top.update_traces(marker_color="#dc2626")
+        st.plotly_chart(fig_top, use_container_width=True)
     with b:
         low = filtered.nsmallest(10, "التغير الكلي %").sort_values("التغير الكلي %", ascending=False)
-        st.plotly_chart(px.bar(low, x="التغير الكلي %", y="اسم الصنف", orientation="h", title="أعلى 10 أصناف انخفاضًا", text_auto=".2f"), use_container_width=True)
+        fig_low = px.bar(low, x="التغير الكلي %", y="اسم الصنف", orientation="h", title="أعلى 10 أصناف انخفاضًا", text_auto=".2f")
+        fig_low.update_traces(marker_color="#16a34a")
+        st.plotly_chart(fig_low, use_container_width=True)
     a, b = st.columns(2)
     with a:
         trend = filtered[months].mean().reset_index()
@@ -415,7 +540,9 @@ elif page == "📦 تحليل الصنف":
     with a:
         st.plotly_chart(px.line(p, x="الشهر", y="السعر", markers=True, title=f"حركة سعر {name}"), use_container_width=True)
     with b:
-        st.plotly_chart(px.bar(p, x="الشهر", y="التغير الشهري %", title="التغير الشهري %", text_auto=".2f"), use_container_width=True)
+        fig_change = px.bar(p, x="الشهر", y="التغير الشهري %", title="التغير الشهري %", text_auto=".2f")
+        fig_change.update_traces(marker_color=["#9ca3af" if pd.isna(v) else ("#dc2626" if v > 0 else ("#16a34a" if v < 0 else "#d97706")) for v in p["التغير الشهري %"]])
+        st.plotly_chart(fig_change, use_container_width=True)
     st.info(f"التوصية: {row['التوصية']}")
 
 elif page == "🏷 تحليل التصنيف":
@@ -451,9 +578,14 @@ elif page == "📡 مراقبة الأسعار":
     c1.metric("ارتفعت في آخر شهر", len(watch))
     c2.metric("أكثر ارتفاع شهري", pct(watch[last_change].max() if not watch.empty else math.nan))
     c3.metric("ارتفاع شهرين متتاليين", int((filtered["أشهر ارتفاع متتالية"] >= 2).sum()))
-    st.dataframe(watch[["اسم الصنف", "التصنيف", "المورد", months[-2], months[-1], last_change, "أشهر ارتفاع متتالية", "التوصية"]], use_container_width=True, hide_index=True)
+    watch_cols = ["اسم الصنف", "التصنيف", "المورد", months[-2], months[-1], last_change, "أشهر ارتفاع متتالية", "التوصية"]
+    watch_raw = watch[watch_cols].reset_index(drop=True)
+    watch_shown = price_display(watch_raw, months[-2:])
+    st.dataframe(style_price_table(watch_shown, watch_raw, months[-2:]), use_container_width=True, hide_index=True)
     if not watch.empty:
-        st.plotly_chart(px.bar(watch.head(20).sort_values(last_change), x=last_change, y="اسم الصنف", orientation="h", title="أعلى الارتفاعات في آخر شهر", text_auto=".2f"), use_container_width=True)
+        fig_watch = px.bar(watch.head(20).sort_values(last_change), x=last_change, y="اسم الصنف", orientation="h", title="أعلى الارتفاعات في آخر شهر", text_auto=".2f")
+        fig_watch.update_traces(marker_color="#dc2626")
+        st.plotly_chart(fig_watch, use_container_width=True)
 
 elif page == "🎯 مركز القرار":
     urgent = filtered[filtered["التوصية"].str.contains("تفاوض|بديل", regex=True)].sort_values("درجة المخاطر", ascending=False)
@@ -473,7 +605,10 @@ elif page == "📑 البيانات والتصدير":
     display = ["كود الصنف", "اسم الصنف", "التصنيف", "الوحدة", "المورد"] + months + [
         "التغير الكلي %", "التذبذب %", "الاتجاه", "أشهر ارتفاع متتالية", "درجة المخاطر", "مستوى المخاطر", "التوصية"
     ]
-    st.dataframe(filtered[display], use_container_width=True, height=570, hide_index=True)
+    raw_view = filtered[display].reset_index(drop=True)
+    shown = price_display(raw_view, months)
+    st.caption("▲ ارتفاع — أحمر | ▼ انخفاض — أخضر | ● ثبات — أصفر")
+    st.dataframe(style_price_table(shown, raw_view, months), use_container_width=True, height=570, hide_index=True)
     xlsx = make_excel(filtered, cat_sum, sup_sum, months)
     st.download_button("📥 تحميل تقرير Excel الاحترافي", xlsx, f"تقرير_تحليل_الأسعار_{APP_VERSION}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
